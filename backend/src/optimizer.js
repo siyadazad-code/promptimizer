@@ -1,32 +1,35 @@
 /**
  * optimizer.js
  * ------------
- * Core logic: turn a prompt into a shorter, meaning-preserving version by
- * swapping long words for shorter synonyms.
+ * Core logic: shorten a prompt by swapping long words for shorter ones,
+ * using the hand-curated dictionary in dictionary.js.
  *
  * Pipeline (in the order required by the spec):
- *   1. Tokenize the prompt into words, preserving everything else verbatim
+ *   1. Tokenize the prompt into words, keeping everything else verbatim
  *      (punctuation, spacing, line breaks, casing).
  *   2. Protect regions that must never change: [square brackets], {curly
  *      braces}, fenced code blocks, `inline code`, URLs, numbers, and any
  *      word shorter than MIN_WORD_LENGTH.
- *   3. For every remaining word, fetch synonyms and choose the SHORTEST one
- *      that is (a) strictly shorter, (b) the same part of speech, and
- *      (c) a single meaning-preserving word. If none qualifies, keep it.
+ *   3. For each remaining word, look it up in the curated dictionary. If a
+ *      safe, strictly shorter word exists, use it; otherwise keep the original.
  *   4. Re-apply the original word's capitalization to the substitute.
- *   5. Return the optimized prompt + the list of {original, replacement} pairs.
+ *   5. Fix any "a"/"an" article that a substitution would have left wrong.
+ *   6. Return the optimized prompt plus the list of {original, replacement}.
+ *
+ * This module makes NO network calls — it is fast, offline and deterministic.
  */
 
-import { getSynonyms, lookupPartOfSpeech } from './datamuse.js';
+import { SYNONYMS } from './dictionary.js';
 
 export const DEFAULT_MIN_WORD_LENGTH = 6;
 
-// Cap on concurrent Datamuse lookups — polite to the free API, fast enough.
-const LOOKUP_CONCURRENCY = 6;
+/** Size of the curated dictionary — reported by the /api/health endpoint. */
+export function dictionaryStats() {
+  return { entries: Object.keys(SYNONYMS).length };
+}
 
 /**
  * Build a list of [start, end) character ranges that must be left untouched.
- * Order matters only for readability; ranges may overlap and that's fine.
  */
 function findProtectedRanges(text) {
   const ranges = [];
@@ -56,83 +59,88 @@ function isProtected(start, end, ranges) {
  * Re-apply the casing pattern of `original` onto `replacement`.
  *  - ALL CAPS    -> REPLACEMENT
  *  - Capitalized -> Replacement
- *  - anything else (incl. lowercase / mixed) -> replacement (left as-is)
+ *  - anything else -> replacement (left lowercase, as stored in the dictionary)
  */
 function matchCase(original, replacement) {
   if (original === original.toUpperCase() && /[A-Z]/.test(original)) {
     return replacement.toUpperCase();
   }
-  if (original[0] === original[0].toUpperCase() && original.slice(1) === original.slice(1).toLowerCase()) {
+  if (
+    original[0] === original[0].toUpperCase() &&
+    original.slice(1) === original.slice(1).toLowerCase()
+  ) {
     return replacement[0].toUpperCase() + replacement.slice(1);
   }
-  return replacement; // synonyms from Datamuse arrive lowercase
+  return replacement;
+}
+
+/** Look up a safe, strictly shorter replacement. Returns null if none. */
+function lookupReplacement(word) {
+  const replacement = SYNONYMS[word.toLowerCase()];
+  if (!replacement) return null;
+  if (replacement.length >= word.length) return null; // safety net
+  return replacement;
 }
 
 /**
- * Choose the best replacement for one (lowercased) word.
- * Returns { replacement: string|null, failed: boolean }.
- *  - replacement is null when nothing qualifies (we keep the original).
- *  - failed is true when the synonym API was unreachable for this word.
+ * Words that take "an" begin with a vowel SOUND. For every replacement word
+ * in the curated dictionary, a first letter of a/e/i/o reliably signals that.
+ * (The "u" replacements here — use, useful, usually — take "a", so a leading
+ * "u" is treated as a consonant sound.)
  */
-async function chooseReplacement(word) {
-  const { synonyms, failed } = await getSynonyms(word);
-  if (failed) return { replacement: null, failed: true };
-  if (synonyms.length === 0) return { replacement: null, failed: false };
-
-  const sourcePos = await lookupPartOfSpeech(word);
-
-  // Keep only candidates that are safe, meaning-preserving substitutions.
-  const candidates = synonyms.filter((s) => {
-    const cand = s.word;
-    if (!/^[a-z][a-z'-]*$/i.test(cand)) return false; // single plain word only
-    if (cand.toLowerCase() === word) return false; // must differ
-    if (cand.length >= word.length) return false; // must be STRICTLY shorter
-    // Part-of-speech check: if both the source word and the candidate expose
-    // POS tags, they must share at least one. If either side has no tags,
-    // we accept it — Datamuse `rel_syn` results are already curated synonyms.
-    if (sourcePos.size > 0 && s.pos.size > 0) {
-      const shared = [...s.pos].some((p) => sourcePos.has(p));
-      if (!shared) return false;
-    }
-    return true;
-  });
-
-  if (candidates.length === 0) return { replacement: null, failed: false };
-
-  // Pick the shortest; break ties by Datamuse ordering (higher relevance first).
-  candidates.sort((a, b) => a.word.length - b.word.length);
-  return { replacement: candidates[0].word.toLowerCase(), failed: false };
+function startsWithVowelSound(word) {
+  return /^[aeio]/i.test(word);
 }
 
-/** Run async `worker` over `items` with a bounded concurrency pool. */
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  async function run() {
-    while (cursor < items.length) {
-      const i = cursor++;
-      results[i] = await worker(items[i], i);
+/**
+ * After substitution, an "a"/"an" sitting in front of a replaced word may no
+ * longer agree with it (e.g. "an important" -> "a key"). Fix any such article,
+ * preserving the article's original capitalization.
+ */
+function fixArticles(segments) {
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.type !== 'word' || !seg.replaced) continue;
+    const prev = segments[i - 1];
+    if (!prev || prev.type !== 'text') continue;
+
+    // Does the text immediately before this word end with an "a"/"an" article?
+    const m = prev.value.match(/(^|[^A-Za-z'])(a|an|A|An)(\s+)$/);
+    if (!m) continue;
+
+    const article = m[2];
+    const wantAn = startsWithVowelSound(seg.replacement);
+    const capitalized = article[0] === article[0].toUpperCase();
+    const fixed = wantAn ? (capitalized ? 'An' : 'an') : capitalized ? 'A' : 'a';
+
+    if (fixed !== article) {
+      const head = prev.value.slice(0, m.index + m[1].length);
+      prev.value = head + fixed + m[3];
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
-  return results;
 }
 
 /**
  * Optimize a prompt.
  * @param {string} prompt
  * @param {number} minWordLength  words shorter than this are never touched
- * @returns {Promise<{
- *   original: string,
- *   optimized: string,
- *   segments: Array<{type:'text'|'word', value?:string, original?:string,
- *                    replacement?:string, replaced?:boolean, failed?:boolean}>,
+ * @returns {{
+ *   original: string, optimized: string,
+ *   segments: Array<object>,
  *   replacements: Array<{original:string, replacement:string}>,
  *   failedWords: string[],
  *   stats: {wordsConsidered:number, wordsReplaced:number}
- * }>}
+ * }}
  */
-export async function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) {
+/**
+ * Comparative / superlative markers. A word sitting directly after one of
+ * these is left untouched, so the tool never produces broken grammar like
+ * "more difficult" -> "more hard" (should be "harder"), or awkward phrasing
+ * like "most important" -> "most key".
+ */
+const COMPARATIVE_MARKERS = /^(more|most|less|least)$/i;
+
+export function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) {
   const protectedRanges = findProtectedRanges(prompt);
 
   // Step 1: find every word (a run of letters, allowing internal ' and -).
@@ -143,27 +151,10 @@ export async function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LE
     matches.push({ text: m[0], start: m.index, end: m.index + m[0].length });
   }
 
-  // Step 2: decide which words are eligible for substitution.
-  const eligibleWords = new Set();
-  for (const w of matches) {
-    const eligible =
-      w.text.length >= minWordLength && !isProtected(w.start, w.end, protectedRanges);
-    w.eligible = eligible;
-    if (eligible) eligibleWords.add(w.text.toLowerCase());
-  }
-
-  // Step 3: look up replacements for each unique eligible word (cached + pooled).
-  const uniqueWords = [...eligibleWords];
-  const lookups = await mapWithConcurrency(uniqueWords, LOOKUP_CONCURRENCY, (word) =>
-    chooseReplacement(word),
-  );
-  const decisionByWord = new Map();
-  uniqueWords.forEach((word, i) => decisionByWord.set(word, lookups[i]));
-
-  // Step 4 & 5: rebuild the prompt as a segment list, applying casing.
+  // Steps 2-4: rebuild the prompt as a segment list, substituting where safe.
   const segments = [];
-  const failedWords = new Set();
   const replacementPairs = new Map(); // lowercase original -> replacement
+  let wordsConsidered = 0;
   let wordsReplaced = 0;
   let cursor = 0;
 
@@ -174,39 +165,49 @@ export async function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LE
     else segments.push({ type: 'text', value });
   };
 
+  let prevWord = null; // previous word token, used for the comparative guard
   for (const w of matches) {
     pushText(prompt.slice(cursor, w.start)); // verbatim gap before this word
     cursor = w.end;
 
-    if (!w.eligible) {
-      pushText(w.text); // protected / too short — keep verbatim
-      continue;
-    }
+    const eligible =
+      w.text.length >= minWordLength &&
+      !isProtected(w.start, w.end, protectedRanges);
 
-    const decision = decisionByWord.get(w.text.toLowerCase());
-    if (decision?.failed) failedWords.add(w.text.toLowerCase());
+    if (eligible) {
+      wordsConsidered++;
 
-    if (decision && decision.replacement) {
-      const replacement = matchCase(w.text, decision.replacement);
-      segments.push({ type: 'word', original: w.text, replacement, replaced: true });
-      replacementPairs.set(w.text.toLowerCase(), decision.replacement);
-      wordsReplaced++;
+      // Guard: skip a word that sits directly after "more/most/less/least"
+      // (only whitespace between), to avoid broken comparatives.
+      const afterComparative =
+        prevWord &&
+        COMPARATIVE_MARKERS.test(prevWord.text) &&
+        /^\s*$/.test(prompt.slice(prevWord.end, w.start));
+
+      const base = afterComparative ? null : lookupReplacement(w.text);
+
+      if (base) {
+        const replacement = matchCase(w.text, base);
+        segments.push({ type: 'word', original: w.text, replacement, replaced: true });
+        replacementPairs.set(w.text.toLowerCase(), base);
+        wordsReplaced++;
+      } else {
+        // Not in the dictionary, or guarded — keep the original word untouched.
+        segments.push({ type: 'word', original: w.text, replacement: w.text, replaced: false });
+      }
     } else {
-      // No qualifying synonym (or lookup failed) — keep the original word.
-      segments.push({
-        type: 'word',
-        original: w.text,
-        replacement: w.text,
-        replaced: false,
-        failed: Boolean(decision?.failed),
-      });
+      pushText(w.text); // protected / too short — keep verbatim
     }
+
+    prevWord = w;
   }
   pushText(prompt.slice(cursor)); // trailing verbatim text
 
-  // Derive both strings from the single segment list — guarantees the
-  // optimized output keeps every space, line break and punctuation mark,
-  // and that `original` is a byte-perfect echo of the input prompt.
+  // Step 5: repair any "a"/"an" left wrong by a substitution.
+  fixArticles(segments);
+
+  // Step 6: derive the optimized string from the single segment list — this
+  // guarantees every space, line break and punctuation mark is preserved.
   const optimized = segments
     .map((s) => (s.type === 'text' ? s.value : s.replacement))
     .join('');
@@ -219,7 +220,7 @@ export async function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LE
       original,
       replacement,
     })),
-    failedWords: [...failedWords],
-    stats: { wordsConsidered: eligibleWords.size, wordsReplaced },
+    failedWords: [], // kept for response-shape compatibility; offline = no failures
+    stats: { wordsConsidered, wordsReplaced },
   };
 }

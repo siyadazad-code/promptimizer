@@ -13,23 +13,25 @@ an LLM.
 1. You paste a prompt into the React UI and click **Optimize**.
 2. The frontend sends the prompt to the Node/Express backend.
 3. The backend tokenizes the prompt, protects everything that must not change,
-   and for each remaining long word asks the free **Datamuse API** for synonyms.
-4. It picks the **shortest synonym** that is strictly shorter, the same part of
-   speech, and a single meaning-preserving word — otherwise it keeps the
-   original word.
+   and looks up each remaining long word in a **hand-curated dictionary** of
+   safe long-to-short word swaps.
+4. If the dictionary has a shorter, meaning-preserving word it uses it;
+   otherwise the original word is kept. Every swap is verified by hand, so the
+   meaning, intent and logic of the prompt are never altered.
 5. The UI shows the original and optimized prompts side by side with replaced
    words highlighted, plus a live token-estimate panel.
 
-All synonym lookups happen **on the backend**, so the browser never calls a
-third-party API directly (no CORS issues, no exposed keys). Lookups are cached
-in memory; if Datamuse is unreachable the affected words are kept unchanged and
-flagged in the UI.
+All word substitution happens **on the backend**. It is fully offline and
+deterministic — no third-party API, no API keys, no network calls — so the
+same prompt always produces the same result, instantly.
 
-### Why Datamuse?
+### Why a curated dictionary?
 
-[Datamuse](https://www.datamuse.com/api/) is free, needs **no API key** and no
-authentication. `?rel_syn=` returns curated synonyms and `&md=p` attaches
-part-of-speech tags, which makes the "same part of speech" rule easy to enforce.
+Open synonym APIs return synonyms for *every* sense of a word, so "application"
+can come back as "lotion" and "complaint" as "ill". Substituting those silently
+breaks the prompt. Promptimizer instead uses a dictionary of word swaps that
+have each been checked by hand, so every replacement is safe to apply blindly.
+The list is conservative by design: when in doubt, a word is left out.
 
 ---
 
@@ -43,7 +45,7 @@ promptimizer/
 │   └── src/
 │       ├── server.js         Express app & routes
 │       ├── optimizer.js      Tokenizing + substitution logic
-│       └── datamuse.js       Datamuse client + in-memory cache
+│       └── dictionary.js     Curated long-to-short word dictionary
 └── frontend/                 React + Vite single-page app
     ├── package.json
     ├── vite.config.js        Dev server + /api proxy to the backend
@@ -124,7 +126,7 @@ npm run preview    # preview the production build locally
 - Fenced code blocks (```` ``` ````) and `inline code`
 - URLs and numbers
 - Words shorter than the configured minimum length
-- Any word where no safe, shorter, same-part-of-speech synonym is found
+- Any word that is not in the curated dictionary of safe word swaps
 
 ---
 
@@ -132,7 +134,7 @@ npm run preview    # preview the production build locally
 
 ### `GET /api/health`
 
-Returns `{ "status": "ok", "cache": { … } }`.
+Returns `{ "status": "ok", "dictionary": { "entries": 159 } }`.
 
 ### `POST /api/optimize`
 
@@ -168,10 +170,11 @@ and optimized text — with highlights — from a single aligned list.
   model-specific (BPE); Promptimizer uses the transparent heuristic
   `tokens = ceil(characters / charsPerToken)`. The UI labels every figure as
   estimated.
-- Synonym quality depends on Datamuse. The backend is deliberately conservative
-  — when in doubt it keeps the original word — so meaning is preserved at the
-  cost of occasionally missing a possible saving.
-- The synonym cache is in-memory and resets when the backend restarts.
+- The word dictionary is deliberately conservative — when in doubt it keeps
+  the original word — so meaning is always preserved at the cost of
+  occasionally missing a possible saving.
+- Savings come from common long words. Prompts already written tersely will
+  see little change; that is expected and correct.
 
 ---
 
@@ -201,8 +204,8 @@ Pick **one** of these:
 The repo already includes `backend/vercel.json` and `backend/api/index.js`.
 On Vercel: **New Project**, set **Root Directory** to `backend`, deploy.
 
-> Serverless note: the in-memory synonym cache resets on cold starts, so it's
-> less effective than on Render — still correct, just more Datamuse calls.
+> The optimizer is fully offline (no external API), so it runs identically
+> whether on Render or as a serverless function.
 
 ### Step 2 — Deploy the frontend
 

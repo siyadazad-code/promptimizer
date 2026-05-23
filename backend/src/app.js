@@ -13,8 +13,7 @@
 
 import express from 'express';
 import cors from 'cors';
-import { optimizePrompt, DEFAULT_MIN_WORD_LENGTH } from './optimizer.js';
-import { cacheStats } from './datamuse.js';
+import { optimizePrompt, DEFAULT_MIN_WORD_LENGTH, dictionaryStats } from './optimizer.js';
 
 const MAX_PROMPT_CHARS = 50_000; // guardrail against abusive payloads
 
@@ -27,7 +26,7 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
 app.use(express.json({ limit: '256kb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', cache: cacheStats() });
+  res.json({ status: 'ok', dictionary: dictionaryStats() });
 });
 
 app.post('/api/optimize', async (req, res) => {
