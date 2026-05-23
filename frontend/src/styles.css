@@ -235,6 +235,14 @@ body {
   color: var(--ink-faint);
 }
 
+.setting input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* ---------- Prompt input ----------------------------------------- */
 
 .prompt-textarea {

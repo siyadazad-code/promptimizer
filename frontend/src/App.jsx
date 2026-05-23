@@ -24,6 +24,7 @@ export default function App() {
   // Numeric settings are kept as strings so the inputs stay freely editable.
   const [charsPerToken, setCharsPerToken] = useState('4');
   const [minWordLength, setMinWordLength] = useState('6');
+  const [aggressive, setAggressive] = useState(false);
 
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -46,6 +47,7 @@ export default function App() {
         body: JSON.stringify({
           prompt,
           minWordLength: Number(minWordLength) || 6,
+          aggressive,
         }),
       });
 
@@ -92,8 +94,8 @@ export default function App() {
           <div>
             <h1>Promptimizer</h1>
             <p className="tagline">
-              Trim tokens, keep meaning. Long words swapped for shorter
-              synonyms — placeholders, code and logic left untouched.
+              Trim tokens, keep meaning. Placeholders, code and logic are
+              always left untouched.
             </p>
           </div>
         </div>
@@ -105,6 +107,8 @@ export default function App() {
           onCharsPerTokenChange={setCharsPerToken}
           minWordLength={minWordLength}
           onMinWordLengthChange={setMinWordLength}
+          aggressive={aggressive}
+          onAggressiveChange={setAggressive}
         />
 
         <PromptInput
@@ -134,7 +138,7 @@ export default function App() {
         {loading && (
           <div className="loading-block" role="status">
             <span className="spinner spinner-lg" aria-hidden="true" />
-            <p>Looking up shorter synonyms…</p>
+            <p>Optimizing your prompt…</p>
           </div>
         )}
 
@@ -149,8 +153,8 @@ export default function App() {
       <footer className="app-footer">
         <p>
           Token figures are <strong>approximate estimates</strong> (characters
-          ÷ characters-per-token), not exact model tokenization. Synonyms
-          provided by the free Datamuse API.
+          ÷ characters-per-token), not exact model tokenization. Optimization
+          runs offline — your prompt never leaves the server.
         </p>
       </footer>
     </div>

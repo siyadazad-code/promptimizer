@@ -21,7 +21,13 @@ an LLM.
 5. The UI shows the original and optimized prompts side by side with replaced
    words highlighted, plus a live token-estimate panel.
 
-All word substitution happens **on the backend**. It is fully offline and
+**Aggressive mode** (an optional toggle) goes a step further before the synonym
+swap: it rewrites wordy phrases ("in order to" → "to", "due to the fact that" →
+"because") and removes filler words ("please", "very", padding frames). It only
+ever touches unprotected text and never deletes articles, so the result stays
+grammatical. Safe mode (the default) only swaps words and deletes nothing.
+
+All optimization happens **on the backend**. It is fully offline and
 deterministic — no third-party API, no API keys, no network calls — so the
 same prompt always produces the same result, instantly.
 
@@ -116,6 +122,8 @@ npm run preview    # preview the production build locally
      Changing it recalculates every count instantly.
    - **Minimum word length** — words shorter than this are never changed
      (default `6`).
+   - **Aggressive mode** — off by default. When on, the backend also trims
+     filler words and rewrites wordy phrases for a deeper reduction.
 3. Click **Optimize prompt**.
 4. Review the side-by-side diff, the token-savings panel, and copy the
    optimized prompt with the **Copy** button.
@@ -141,10 +149,11 @@ Returns `{ "status": "ok", "dictionary": { "entries": 159 } }`.
 Request body:
 
 ```json
-{ "prompt": "your prompt text", "minWordLength": 6 }
+{ "prompt": "your prompt text", "minWordLength": 6, "aggressive": false }
 ```
 
-`minWordLength` is optional (default 6, allowed range 2–20).
+`minWordLength` is optional (default 6, allowed range 2–20). `aggressive` is
+optional (default `false`).
 
 Response body:
 

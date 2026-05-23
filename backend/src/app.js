@@ -30,7 +30,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.post('/api/optimize', async (req, res) => {
-  const { prompt, minWordLength } = req.body ?? {};
+  const { prompt, minWordLength, aggressive } = req.body ?? {};
 
   // --- Validation -----------------------------------------------------------
   if (typeof prompt !== 'string') {
@@ -58,7 +58,10 @@ app.post('/api/optimize', async (req, res) => {
 
   // --- Optimize -------------------------------------------------------------
   try {
-    const result = await optimizePrompt(prompt, minLen);
+    const result = await optimizePrompt(prompt, {
+      minWordLength: minLen,
+      aggressive: Boolean(aggressive),
+    });
     res.json(result);
   } catch (err) {
     console.error('Optimization failed:', err);

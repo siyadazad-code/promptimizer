@@ -1,25 +1,29 @@
 /**
  * optimizer.js
  * ------------
- * Core logic: shorten a prompt by swapping long words for shorter ones,
- * using the hand-curated dictionary in dictionary.js.
+ * Core logic: shorten a prompt while preserving its meaning, intent and logic.
  *
- * Pipeline (in the order required by the spec):
- *   1. Tokenize the prompt into words, keeping everything else verbatim
- *      (punctuation, spacing, line breaks, casing).
- *   2. Protect regions that must never change: [square brackets], {curly
- *      braces}, fenced code blocks, `inline code`, URLs, numbers, and any
- *      word shorter than MIN_WORD_LENGTH.
- *   3. For each remaining word, look it up in the curated dictionary. If a
- *      safe, strictly shorter word exists, use it; otherwise keep the original.
- *   4. Re-apply the original word's capitalization to the substitute.
- *   5. Fix any "a"/"an" article that a substitution would have left wrong.
- *   6. Return the optimized prompt plus the list of {original, replacement}.
+ * Two modes:
+ *   - Safe (default): swap long words for shorter ones using the hand-curated
+ *     dictionary in dictionary.js. Nothing is ever deleted.
+ *   - Aggressive (opt-in): first run compress.js to rewrite wordy phrases and
+ *     strip filler words, then apply the same safe synonym swaps on top.
+ *
+ * Pipeline:
+ *   1. (Aggressive only) compress wordy phrases / filler, then fix sentence
+ *      capitalization left lowercase by deletions.
+ *   2. Tokenize into words, keeping everything else verbatim.
+ *   3. Protect regions that must never change: [brackets], {braces}, fenced and
+ *      inline code, URLs, numbers, and words shorter than MIN_WORD_LENGTH.
+ *   4. Swap each remaining word for a safe, strictly shorter dictionary word.
+ *   5. Re-apply the original word's capitalization to the substitute.
+ *   6. Fix any "a"/"an" article left wrong by a substitution.
  *
  * This module makes NO network calls — it is fast, offline and deterministic.
  */
 
 import { SYNONYMS } from './dictionary.js';
+import { aggressiveCompress, recapitalize } from './compress.js';
 
 export const DEFAULT_MIN_WORD_LENGTH = 6;
 
@@ -28,9 +32,7 @@ export function dictionaryStats() {
   return { entries: Object.keys(SYNONYMS).length };
 }
 
-/**
- * Build a list of [start, end) character ranges that must be left untouched.
- */
+/** Build a list of [start, end) character ranges that must be left untouched. */
 function findProtectedRanges(text) {
   const ranges = [];
   const patterns = [
@@ -83,18 +85,17 @@ function lookupReplacement(word) {
 }
 
 /**
- * Words that take "an" begin with a vowel SOUND. For every replacement word
- * in the curated dictionary, a first letter of a/e/i/o reliably signals that.
- * (The "u" replacements here — use, useful, usually — take "a", so a leading
- * "u" is treated as a consonant sound.)
+ * Words that take "an" begin with a vowel SOUND. For every replacement word in
+ * the curated dictionary, a first letter of a/e/i/o reliably signals that.
+ * (The "u" replacements here — use, useful, usually — take "a".)
  */
 function startsWithVowelSound(word) {
   return /^[aeio]/i.test(word);
 }
 
 /**
- * After substitution, an "a"/"an" sitting in front of a replaced word may no
- * longer agree with it (e.g. "an important" -> "a key"). Fix any such article,
+ * After substitution, an "a"/"an" in front of a replaced word may no longer
+ * agree with it (e.g. "an important" -> "a key"). Fix any such article,
  * preserving the article's original capitalization.
  */
 function fixArticles(segments) {
@@ -104,7 +105,6 @@ function fixArticles(segments) {
     const prev = segments[i - 1];
     if (!prev || prev.type !== 'text') continue;
 
-    // Does the text immediately before this word end with an "a"/"an" article?
     const m = prev.value.match(/(^|[^A-Za-z'])(a|an|A|An)(\s+)$/);
     if (!m) continue;
 
@@ -121,9 +121,18 @@ function fixArticles(segments) {
 }
 
 /**
+ * Comparative / superlative markers. A word directly after one of these is
+ * left untouched, so the tool never produces broken grammar like "more
+ * difficult" -> "more hard", or awkward phrasing like "most important" ->
+ * "most key".
+ */
+const COMPARATIVE_MARKERS = /^(more|most|less|least)$/i;
+
+/**
  * Optimize a prompt.
  * @param {string} prompt
- * @param {number} minWordLength  words shorter than this are never touched
+ * @param {object|number} options  { minWordLength, aggressive }. A bare number
+ *                                 is accepted as minWordLength for compatibility.
  * @returns {{
  *   original: string, optimized: string,
  *   segments: Array<object>,
@@ -132,26 +141,31 @@ function fixArticles(segments) {
  *   stats: {wordsConsidered:number, wordsReplaced:number}
  * }}
  */
-/**
- * Comparative / superlative markers. A word sitting directly after one of
- * these is left untouched, so the tool never produces broken grammar like
- * "more difficult" -> "more hard" (should be "harder"), or awkward phrasing
- * like "most important" -> "most key".
- */
-const COMPARATIVE_MARKERS = /^(more|most|less|least)$/i;
+export function optimizePrompt(prompt, options = {}) {
+  const opts = typeof options === 'number' ? { minWordLength: options } : options;
+  const minWordLength = opts.minWordLength ?? DEFAULT_MIN_WORD_LENGTH;
+  const aggressive = Boolean(opts.aggressive);
 
-export function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) {
-  const protectedRanges = findProtectedRanges(prompt);
+  // Step 1: in aggressive mode, compress wordy phrases / filler first, then
+  // repair sentence capitalization. `source` is what the synonym pass works on.
+  let source = prompt;
+  if (aggressive) {
+    let compressed = aggressiveCompress(prompt, findProtectedRanges(prompt));
+    compressed = recapitalize(compressed, findProtectedRanges(compressed));
+    if (compressed.trim().length > 0) source = compressed; // fall back if empty
+  }
 
-  // Step 1: find every word (a run of letters, allowing internal ' and -).
+  const protectedRanges = findProtectedRanges(source);
+
+  // Step 2: find every word (a run of letters, allowing internal ' and -).
   const wordRe = /[A-Za-z][A-Za-z'-]*/g;
   const matches = [];
   let m;
-  while ((m = wordRe.exec(prompt)) !== null) {
+  while ((m = wordRe.exec(source)) !== null) {
     matches.push({ text: m[0], start: m.index, end: m.index + m[0].length });
   }
 
-  // Steps 2-4: rebuild the prompt as a segment list, substituting where safe.
+  // Steps 3-5: rebuild the text as a segment list, substituting where safe.
   const segments = [];
   const replacementPairs = new Map(); // lowercase original -> replacement
   let wordsConsidered = 0;
@@ -167,7 +181,7 @@ export function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) 
 
   let prevWord = null; // previous word token, used for the comparative guard
   for (const w of matches) {
-    pushText(prompt.slice(cursor, w.start)); // verbatim gap before this word
+    pushText(source.slice(cursor, w.start)); // verbatim gap before this word
     cursor = w.end;
 
     const eligible =
@@ -177,12 +191,11 @@ export function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) 
     if (eligible) {
       wordsConsidered++;
 
-      // Guard: skip a word that sits directly after "more/most/less/least"
-      // (only whitespace between), to avoid broken comparatives.
+      // Guard: skip a word directly after "more/most/less/least".
       const afterComparative =
         prevWord &&
         COMPARATIVE_MARKERS.test(prevWord.text) &&
-        /^\s*$/.test(prompt.slice(prevWord.end, w.start));
+        /^\s*$/.test(source.slice(prevWord.end, w.start));
 
       const base = afterComparative ? null : lookupReplacement(w.text);
 
@@ -192,7 +205,6 @@ export function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) 
         replacementPairs.set(w.text.toLowerCase(), base);
         wordsReplaced++;
       } else {
-        // Not in the dictionary, or guarded — keep the original word untouched.
         segments.push({ type: 'word', original: w.text, replacement: w.text, replaced: false });
       }
     } else {
@@ -201,13 +213,11 @@ export function optimizePrompt(prompt, minWordLength = DEFAULT_MIN_WORD_LENGTH) 
 
     prevWord = w;
   }
-  pushText(prompt.slice(cursor)); // trailing verbatim text
+  pushText(source.slice(cursor)); // trailing verbatim text
 
-  // Step 5: repair any "a"/"an" left wrong by a substitution.
+  // Step 6: repair any "a"/"an" left wrong by a substitution.
   fixArticles(segments);
 
-  // Step 6: derive the optimized string from the single segment list — this
-  // guarantees every space, line break and punctuation mark is preserved.
   const optimized = segments
     .map((s) => (s.type === 'text' ? s.value : s.replacement))
     .join('');
