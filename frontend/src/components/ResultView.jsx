@@ -3,12 +3,12 @@ import { useState } from 'react';
 /**
  * ResultView — original vs optimized prompt, side by side.
  *
- * Both columns are rendered from the SAME `segments` array returned by the
- * backend, so highlighting lines up exactly:
- *   - text segments  -> rendered verbatim (whitespace preserved via CSS)
- *   - word segments  -> `original` on the left, `replacement` on the right;
- *                       substituted words get a coloured highlight, and any
- *                       word whose synonym lookup failed gets a warning mark.
+ * Safe / Aggressive modes: both columns are rendered from the SAME `segments`
+ * array, so word-level highlighting lines up exactly.
+ *
+ * Maximum (AI) mode: Gemini rewrites the prompt freely, so there is no
+ * word-by-word diff — the two columns are rendered straight from the original
+ * and optimized strings instead.
  */
 function renderSegments(segments, side) {
   return segments.map((seg, i) => {
@@ -56,14 +56,18 @@ export default function ResultView({ result }) {
     }
   }
 
-  const { segments, replacements, failedWords, stats } = result;
+  const { segments, replacements, failedWords, stats, original, optimized } =
+    result;
+  const isAi = result.mode === 'ai';
 
   return (
     <section className="card result-card" aria-label="Optimization result">
       <div className="card-head">
         <h2>Original vs optimized</h2>
         <span className="counter">
-          {stats.wordsReplaced} of {stats.wordsConsidered} eligible words shortened
+          {isAi
+            ? 'Rewritten by Gemini AI'
+            : `${stats.wordsReplaced} of ${stats.wordsConsidered} eligible words shortened`}
         </span>
       </div>
 
@@ -72,7 +76,9 @@ export default function ResultView({ result }) {
           <header className="diff-col-head">
             <span className="diff-tag">Original</span>
           </header>
-          <pre className="diff-text">{renderSegments(segments, 'original')}</pre>
+          <pre className="diff-text">
+            {isAi ? original : renderSegments(segments, 'original')}
+          </pre>
         </article>
 
         <article className="diff-col diff-col-optimized">
@@ -82,7 +88,9 @@ export default function ResultView({ result }) {
               {copied ? '✓ Copied' : 'Copy'}
             </button>
           </header>
-          <pre className="diff-text">{renderSegments(segments, 'optimized')}</pre>
+          <pre className="diff-text">
+            {isAi ? optimized : renderSegments(segments, 'optimized')}
+          </pre>
         </article>
       </div>
 
@@ -95,7 +103,12 @@ export default function ResultView({ result }) {
         </p>
       )}
 
-      {replacements.length > 0 ? (
+      {isAi ? (
+        <p className="notice notice-info" role="status">
+          This prompt was rewritten by Google's Gemini AI. The result can vary
+          between runs — review it before use.
+        </p>
+      ) : replacements.length > 0 ? (
         <details className="replacements">
           <summary>
             {replacements.length} substitution

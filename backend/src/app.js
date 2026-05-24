@@ -14,6 +14,7 @@
 import express from 'express';
 import cors from 'cors';
 import { optimizePrompt, DEFAULT_MIN_WORD_LENGTH, dictionaryStats } from './optimizer.js';
+import { geminiCompress, geminiConfigured, geminiModel } from './gemini.js';
 
 const MAX_PROMPT_CHARS = 50_000; // guardrail against abusive payloads
 
@@ -26,11 +27,15 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
 app.use(express.json({ limit: '256kb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', dictionary: dictionaryStats() });
+  res.json({
+    status: 'ok',
+    dictionary: dictionaryStats(),
+    ai: { configured: geminiConfigured(), model: geminiModel() },
+  });
 });
 
 app.post('/api/optimize', async (req, res) => {
-  const { prompt, minWordLength, aggressive } = req.body ?? {};
+  const { prompt, minWordLength, aggressive, mode } = req.body ?? {};
 
   // --- Validation -----------------------------------------------------------
   if (typeof prompt !== 'string') {
@@ -56,13 +61,47 @@ app.post('/api/optimize', async (req, res) => {
     minLen = Math.floor(n);
   }
 
-  // --- Optimize -------------------------------------------------------------
+  // Resolve the mode. `mode` is the current field; `aggressive` (boolean) is
+  // still accepted for backward compatibility with older frontend builds.
+  const effectiveMode =
+    typeof mode === 'string'
+      ? mode.toLowerCase()
+      : aggressive
+        ? 'aggressive'
+        : 'safe';
+  if (!['safe', 'aggressive', 'ai'].includes(effectiveMode)) {
+    return res
+      .status(400)
+      .json({ error: '"mode" must be safe, aggressive, or ai.' });
+  }
+
+  // --- Maximum (AI) mode: rewrite via the Gemini API ------------------------
+  if (effectiveMode === 'ai') {
+    try {
+      const optimized = await geminiCompress(prompt);
+      return res.json({
+        original: prompt,
+        optimized,
+        mode: 'ai',
+        segments: [{ type: 'text', value: optimized }],
+        replacements: [],
+        failedWords: [],
+        stats: { wordsConsidered: 0, wordsReplaced: 0 },
+      });
+    } catch (err) {
+      // geminiCompress throws messages that are safe to show the user.
+      console.error('AI optimization failed:', err.message);
+      return res.status(502).json({ error: err.message });
+    }
+  }
+
+  // --- Safe / Aggressive mode: offline rule-based optimization --------------
   try {
     const result = await optimizePrompt(prompt, {
       minWordLength: minLen,
-      aggressive: Boolean(aggressive),
+      aggressive: effectiveMode === 'aggressive',
     });
-    res.json(result);
+    res.json({ ...result, mode: effectiveMode });
   } catch (err) {
     console.error('Optimization failed:', err);
     res.status(500).json({ error: 'Internal error while optimizing the prompt.' });

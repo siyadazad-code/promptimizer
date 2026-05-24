@@ -235,12 +235,22 @@ body {
   color: var(--ink-faint);
 }
 
-.setting input[type='checkbox'] {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent);
+.setting select {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface-2);
   cursor: pointer;
-  flex-shrink: 0;
+}
+
+.setting select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 
 /* ---------- Prompt input ----------------------------------------- */

@@ -2,19 +2,43 @@
  * SettingsBar — controls for the optimizer.
  *  - charsPerToken: drives the live token estimate (default 4).
  *  - minWordLength: shortest word the backend may substitute (default 6).
- *  - aggressive:    when on, the backend also trims filler words and rewrites
- *                   wordy phrases — a deeper cut than synonym swaps alone.
+ *                   Applies to Safe and Aggressive modes only.
+ *  - mode:          'safe'       — swap long words for shorter ones (offline);
+ *                   'aggressive' — also trim filler and wordy phrases (offline);
+ *                   'ai'         — Gemini rewrites the whole prompt (online).
  */
+const MODE_HINTS = {
+  safe: 'swaps long words only — offline, nothing deleted',
+  aggressive: 'also trims filler and wordy phrases — offline',
+  ai: 'Gemini rewrites the whole prompt — sends it to Google',
+};
+
 export default function SettingsBar({
   charsPerToken,
   onCharsPerTokenChange,
   minWordLength,
   onMinWordLengthChange,
-  aggressive,
-  onAggressiveChange,
+  mode,
+  onModeChange,
 }) {
   return (
     <div className="settings-bar" role="group" aria-label="Optimizer settings">
+      <div className="setting">
+        <label htmlFor="mode">Optimization mode</label>
+        <div className="setting-control">
+          <select
+            id="mode"
+            value={mode}
+            onChange={(e) => onModeChange(e.target.value)}
+          >
+            <option value="safe">Safe</option>
+            <option value="aggressive">Aggressive</option>
+            <option value="ai">Maximum (AI)</option>
+          </select>
+          <span className="setting-hint">{MODE_HINTS[mode]}</span>
+        </div>
+      </div>
+
       <div className="setting">
         <label htmlFor="charsPerToken">Characters per token</label>
         <div className="setting-control">
@@ -43,24 +67,7 @@ export default function SettingsBar({
             value={minWordLength}
             onChange={(e) => onMinWordLengthChange(e.target.value)}
           />
-          <span className="setting-hint">shorter words are never changed</span>
-        </div>
-      </div>
-
-      <div className="setting">
-        <label htmlFor="aggressive">Aggressive mode</label>
-        <div className="setting-control">
-          <input
-            id="aggressive"
-            type="checkbox"
-            checked={aggressive}
-            onChange={(e) => onAggressiveChange(e.target.checked)}
-          />
-          <span className="setting-hint">
-            {aggressive
-              ? 'on — also trims filler words and wordy phrases'
-              : 'off — swaps long words only, nothing deleted'}
-          </span>
+          <span className="setting-hint">Safe / Aggressive modes only</span>
         </div>
       </div>
     </div>

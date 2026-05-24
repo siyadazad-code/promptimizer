@@ -27,9 +27,17 @@ swap: it rewrites wordy phrases ("in order to" → "to", "due to the fact that" 
 ever touches unprotected text and never deletes articles, so the result stays
 grammatical. Safe mode (the default) only swaps words and deletes nothing.
 
-All optimization happens **on the backend**. It is fully offline and
-deterministic — no third-party API, no API keys, no network calls — so the
-same prompt always produces the same result, instantly.
+**Maximum (AI) mode** (optional) does not use the dictionary at all. It sends
+the prompt to Google's free Gemini API and asks the model to rewrite it as
+short as possible while preserving every instruction and protected token. It
+achieves the deepest reduction, but it needs an internet connection and a
+Gemini API key, its output varies between runs, and the prompt is sent to
+Google. It is unavailable unless a key is configured (see Deploying to
+production).
+
+Safe and Aggressive optimization happen **on the backend**, fully offline and
+deterministic — no third-party API, no network calls — so the same prompt
+always produces the same result. Maximum (AI) mode is the one exception.
 
 ### Why a curated dictionary?
 
@@ -122,8 +130,9 @@ npm run preview    # preview the production build locally
      Changing it recalculates every count instantly.
    - **Minimum word length** — words shorter than this are never changed
      (default `6`).
-   - **Aggressive mode** — off by default. When on, the backend also trims
-     filler words and rewrites wordy phrases for a deeper reduction.
+   - **Optimization mode** — Safe (swap long words, offline), Aggressive (also
+     trim filler and wordy phrases, offline), or Maximum (AI) (Gemini rewrites
+     the whole prompt; needs a key and sends the prompt to Google).
 3. Click **Optimize prompt**.
 4. Review the side-by-side diff, the token-savings panel, and copy the
    optimized prompt with the **Copy** button.
@@ -149,11 +158,11 @@ Returns `{ "status": "ok", "dictionary": { "entries": 159 } }`.
 Request body:
 
 ```json
-{ "prompt": "your prompt text", "minWordLength": 6, "aggressive": false }
+{ "prompt": "your prompt text", "minWordLength": 6, "mode": "safe" }
 ```
 
-`minWordLength` is optional (default 6, allowed range 2–20). `aggressive` is
-optional (default `false`).
+`minWordLength` is optional (default 6, allowed range 2–20). `mode` is optional
+(`safe`, `aggressive`, or `ai`; default `safe`).
 
 Response body:
 
@@ -215,6 +224,27 @@ On Vercel: **New Project**, set **Root Directory** to `backend`, deploy.
 
 > The optimizer is fully offline (no external API), so it runs identically
 > whether on Render or as a serverless function.
+
+#### Enabling Maximum (AI) mode (optional)
+
+Safe and Aggressive modes need no setup. To also enable **Maximum (AI) mode**,
+give the backend a free Google Gemini API key:
+
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey),
+   sign in with a Google account, and create an API key — no credit card.
+2. In your backend host's dashboard (on Render: the **Environment** tab), add:
+
+   | Key              | Value                    |
+   | ---------------- | ------------------------ |
+   | `GEMINI_API_KEY` | the key you just created |
+
+3. Redeploy / restart the backend. `GET /api/health` then reports
+   `"ai": { "configured": true }`.
+
+Without this variable the app still runs — Maximum (AI) mode just returns a
+"not configured" message while Safe and Aggressive modes work normally. An
+optional `GEMINI_MODEL` variable overrides the model (default
+`gemini-2.5-flash`).
 
 ### Step 2 — Deploy the frontend
 

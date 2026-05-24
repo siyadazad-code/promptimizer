@@ -24,7 +24,7 @@ export default function App() {
   // Numeric settings are kept as strings so the inputs stay freely editable.
   const [charsPerToken, setCharsPerToken] = useState('4');
   const [minWordLength, setMinWordLength] = useState('6');
-  const [aggressive, setAggressive] = useState(false);
+  const [mode, setMode] = useState('safe');
 
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -47,7 +47,7 @@ export default function App() {
         body: JSON.stringify({
           prompt,
           minWordLength: Number(minWordLength) || 6,
-          aggressive,
+          mode,
         }),
       });
 
@@ -107,8 +107,8 @@ export default function App() {
           onCharsPerTokenChange={setCharsPerToken}
           minWordLength={minWordLength}
           onMinWordLengthChange={setMinWordLength}
-          aggressive={aggressive}
-          onAggressiveChange={setAggressive}
+          mode={mode}
+          onModeChange={setMode}
         />
 
         <PromptInput
@@ -153,8 +153,9 @@ export default function App() {
       <footer className="app-footer">
         <p>
           Token figures are <strong>approximate estimates</strong> (characters
-          ÷ characters-per-token), not exact model tokenization. Optimization
-          runs offline — your prompt never leaves the server.
+          ÷ characters-per-token), not exact model tokenization. Safe and
+          Aggressive modes run fully offline; Maximum (AI) mode sends your
+          prompt to Google's Gemini API to rewrite it.
         </p>
       </footer>
     </div>
